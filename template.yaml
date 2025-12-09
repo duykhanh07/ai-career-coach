@@ -130,7 +130,7 @@ Resources:
         AllowMethods: [GET, POST, PUT, DELETE, OPTIONS]
         AllowHeaders: [Authorization, Content-Type]
       Auth:
-        DefaultAuthorizer: CognitoAuthorizer
+        #DefaultAuthorizer: CognitoAuthorizer
         Authorizers:
           CognitoAuthorizer:
             IdentitySource: "$request.header.Authorization"
@@ -139,61 +139,317 @@ Resources:
               audience: [!Ref UserPoolClient]
 
   # =================================================================
-  # 4. BACKEND (Spring Boot Monolith Lambda)
+  # 4. BACKEND
   # =================================================================
-  BackendFunction:
+  # =================================================================
+  # LAMBDA 1: QUẢN LÝ USER PROFILE & ONBOARDING
+  # =================================================================
+  UserProfileFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: backend/ # Thư mục chứa code Java
+      CodeUri: backend/target/backend-0.0.1-SNAPSHOT-aws.jar
       Handler: org.springframework.cloud.function.adapter.aws.FunctionInvoker::handleRequest
-      SnapStart: # Tăng tốc khởi động Java
+      SnapStart:
         ApplyOn: PublishedVersions
       Policies:
-        # Quyền đọc/ghi DB
         - DynamoDBCrudPolicy:
             TableName: !Ref CoreTable
-        # Quyền gọi AI Bedrock
-        - Statement:
-            - Effect: Allow
-              Action: bedrock:InvokeModel
-              Resource: "*" # Hoặc cụ thể ARN của model Claude 3
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref CoreTable
+          # Chỉ chạy hàm profileHandler
+          SPRING_CLOUD_FUNCTION_DEFINITION: profileHandler
       Events:
-        ApiRequest:
+        GetProfile:
           Type: HttpApi
           Properties:
             ApiId: !Ref HttpApi
-            Path: /{proxy+} # Hứng tất cả request (resume, interview...)
-            Method: ANY
+            Path: /profile
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
+        UpdateProfile:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /profile
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+        GetOnboarding:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /onboarding
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
 
   # =================================================================
-  # 5. FRONTEND HOSTING (S3 + CloudFront)
+  # LAMBDA 2: QUẢN LÝ INDUSTRY INSIGHTS & AI
+  # =================================================================
+  IndustryInsightFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/target/backend-0.0.1-SNAPSHOT-aws.jar
+      Handler: org.springframework.cloud.function.adapter.aws.FunctionInvoker::handleRequest
+      Timeout: 60 # Tăng Timeout vì gọi AI Bedrock có thể lâu
+      MemorySize: 2048
+      SnapStart:
+        ApplyOn: PublishedVersions
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CoreTable
+        # Cấp quyền Bedrock chỉ cho hàm này (Bảo mật hơn)
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+                # Thêm quyền Marketplace để sửa lỗi AccessDenied
+                - aws-marketplace:ViewSubscriptions
+                - aws-marketplace:Subscribe
+                - aws-marketplace:Unsubscribe
+              Resource: "*"
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref CoreTable
+          BEDROCK_MODEL_ID: "anthropic.claude-3-haiku-20240307-v1:0"
+          # Chỉ chạy hàm industryInsightHandler
+          SPRING_CLOUD_FUNCTION_DEFINITION: industryInsightHandler
+      Events:
+        GetIndustryInsights:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /industry-insights
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
+  # =================================================================
+  # LAMBDA 3: QUẢN LÝ RESUME & AI WRITING
+  # =================================================================
+  ResumeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/target/backend-0.0.1-SNAPSHOT-aws.jar
+      Handler: org.springframework.cloud.function.adapter.aws.FunctionInvoker::handleRequest
+      Timeout: 60 # AI Improve cần thời gian
+      MemorySize: 2048
+      SnapStart:
+        ApplyOn: PublishedVersions
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CoreTable
+        # Cấp quyền Bedrock để Improve Resume
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+                # Thêm quyền Marketplace để sửa lỗi AccessDenied
+                - aws-marketplace:ViewSubscriptions
+                - aws-marketplace:Subscribe
+                - aws-marketplace:Unsubscribe
+              Resource: "*"
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref CoreTable
+          BEDROCK_MODEL_ID: "anthropic.claude-3-haiku-20240307-v1:0"
+          # Chỉ chạy hàm resumeHandler
+          SPRING_CLOUD_FUNCTION_DEFINITION: resumeHandler
+      Events:
+        GetResume:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /resume
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
+        SaveResume:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /resume
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+        ImproveResume:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /resume/improve
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+  # =================================================================
+  # LAMBDA 4: QUẢN LÝ COVER LETTER (CRUD + AI)
+  # =================================================================
+  CoverLetterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/target/backend-0.0.1-SNAPSHOT-aws.jar
+      Handler: org.springframework.cloud.function.adapter.aws.FunctionInvoker::handleRequest
+      Timeout: 60 # Gọi AI nên cần timeout lâu
+      MemorySize: 2048
+      SnapStart:
+        ApplyOn: PublishedVersions
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CoreTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+                # Thêm quyền Marketplace để sửa lỗi AccessDenied
+                - aws-marketplace:ViewSubscriptions
+                - aws-marketplace:Subscribe
+                - aws-marketplace:Unsubscribe
+              Resource: "*"
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref CoreTable
+          BEDROCK_MODEL_ID: "anthropic.claude-3-haiku-20240307-v1:0"
+          # Chạy hàm coverLetterHandler
+          SPRING_CLOUD_FUNCTION_DEFINITION: coverLetterHandler
+      Events:
+        # 1. Generate (POST)
+        GenerateCoverLetter:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /cover-letters
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+        # 2. List All (GET)
+        ListCoverLetters:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /cover-letters
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+        # 3. Get One (GET /{id})
+        GetOneCoverLetter:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /cover-letters/{id}
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+        # 4. Delete (DELETE /{id})
+        DeleteCoverLetter:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /cover-letters/{id}
+            Method: DELETE
+            Auth:
+              Authorizer: CognitoAuthorizer
+  # =================================================================
+  # LAMBDA 5: QUẢN LÝ INTERVIEW & ASSESSMENT
+  # =================================================================
+  InterviewFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/target/backend-0.0.1-SNAPSHOT-aws.jar
+      Handler: org.springframework.cloud.function.adapter.aws.FunctionInvoker::handleRequest
+      Timeout: 60 # Gọi AI tạo quiz mất thời gian
+      MemorySize: 2048
+      SnapStart:
+        ApplyOn: PublishedVersions
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CoreTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+                # Thêm quyền Marketplace để sửa lỗi AccessDenied
+                - aws-marketplace:ViewSubscriptions
+                - aws-marketplace:Subscribe
+                - aws-marketplace:Unsubscribe
+              Resource: "*"
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref CoreTable
+          BEDROCK_MODEL_ID: "anthropic.claude-3-haiku-20240307-v1:0"
+          # Chạy hàm assessmentHandler
+          SPRING_CLOUD_FUNCTION_DEFINITION: assessmentHandler
+      Events:
+        GenerateQuiz:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /interview/generate
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+        SaveQuiz:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /interview/save
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+        GetHistory:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /interview/history
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
+  # =================================================================
+  # 5. FRONTEND HOSTING (S3 + CloudFront + OAC Security)
   # =================================================================
   FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
+      BucketName: !Sub "career-coach-frontend-${AWS::AccountId}" # Thêm ID tài khoản để chắc chắn không trùng tên
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
 
-  FrontendOAI:
-    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+  # Cấu hình bảo mật mới (OAC) - Thay thế cho OAI cũ bị lỗi
+  CloudFrontOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
     Properties:
-      CloudFrontOriginAccessIdentityConfig:
-        Comment: "Access S3 bucket content only through CloudFront"
+      OriginAccessControlConfig:
+        Description: "Access Control for CV Analyzer"
+        Name: !Sub "OAC-${FrontendBucket}"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
 
   FrontendBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
       Bucket: !Ref FrontendBucket
       PolicyDocument:
+        Version: "2012-10-17"
         Statement:
-          - Effect: Allow
+          - Sid: "AllowCloudFrontServicePrincipal"
+            Effect: Allow
             Principal:
-              AWS: !Sub "arn:aws:iam::cloudfront::user/CloudFront Origin Access Identity ${FrontendOAI}"
+              Service: "cloudfront.amazonaws.com" # Dùng Service Principal chuẩn (Luôn tồn tại)
             Action: "s3:GetObject"
             Resource: !Sub "${FrontendBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                "AWS:SourceArn": !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${FrontendDistribution}"
 
   FrontendDistribution:
     Type: AWS::CloudFront::Distribution
@@ -202,18 +458,20 @@ Resources:
         Enabled: true
         DefaultRootObject: index.html
         Origins:
-          - DomainName: !GetAtt FrontendBucket.DomainName
+          - DomainName: !GetAtt FrontendBucket.RegionalDomainName # Lưu ý dùng RegionalDomainName
             Id: S3Origin
+            OriginAccessControlId: !GetAtt CloudFrontOriginAccessControl.Id # Trỏ vào OAC mới
             S3OriginConfig:
-              OriginAccessIdentity: !Sub "origin-access-identity/cloudfront/${FrontendOAI}"
+              OriginAccessIdentity: "" # Để trống dòng này vì đã dùng OAC
         DefaultCacheBehavior:
           TargetOriginId: S3Origin
           ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD, OPTIONS]
           ForwardedValues:
             QueryString: false
             Cookies:
               Forward: none
-        # SPA Routing: Nếu không tìm thấy file, trả về index.html để React Router xử lý
         CustomErrorResponses:
           - ErrorCode: 403
             ResponseCode: 200
@@ -233,5 +491,8 @@ Outputs:
     Description: "App Client ID"
     Value: !Ref UserPoolClient
   WebsiteURL:
-    Description: "URL trang web React của bạn"
+    Description: "URL trang web React của bạn (CloudFront)"
     Value: !GetAtt FrontendDistribution.DomainName
+  S3BucketName:
+    Description: "Tên Bucket để upload code Frontend"
+    Value: !Ref FrontendBucket
