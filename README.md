@@ -130,9 +130,9 @@ Truy cập vào link CloudFront URL để sử dụng ứng dụng.
 ---
 
 ## 📂 Cấu trúc Thư mục
-* Backend
+#### 1. Backend
 ![BE](/assets/backend.png)
-* Frontend
+#### 2. Frontend
 ![FE](/assets/frontend.png)
 
 ---
